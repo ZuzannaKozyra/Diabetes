@@ -1,0 +1,339 @@
+---
+title: "Projekt z zakresu analizy danych"
+author: "Zuzanna Kozyra, Michał Łysakowski"
+format: 
+  html:
+    warning: false
+    message: false
+    echo: false
+    self-contained: true
+    toc: true
+    toc-location: left
+    toc-title: Spis treści
+editor: visual
+editor_options: 
+  chunk_output_type: inline
+bibliography: references.bib
+---
+
+# Cel Projektu
+
+Badanie wpływu różnych czynników na zachorowania na cukrzyce. Zbiór danych pochodzi z instytutu ['National Institute of Diabetes and Digestive and Kidney Diseases'](https://www.niddk.nih.gov/ "strona instytutu"). W próbie wszystkie pacjentki to kobiety pochodzące z Indii, w wieku 21 lat lub starsze.
+
+# Opis zbioru danych
+
+## Wczytanie danych
+
+```{r}
+library(knitr)
+library(tidyverse)
+library(Hotelling)
+library(rstatix)
+library(dplyr)
+library(DT)
+library(ggpubr)
+library(ggcorrplot)
+library(gridExtra)
+library(readr)
+library(rstatix)
+
+dane <- read.csv('diabetes.csv')
+dane <- dane %>% 
+  add_column (Id = 1: nrow(dane), .before = 1)
+datatable(dane)
+```
+
+## Opis zmiennych
+
+Zmienne podane są w zbiorze $\textrm{diabetes}$ w języku angielskim, poniżej znajduje się tabela opisująca każdą zmienną.
+
+```{r}
+#| tbl-cap: "Opis zmiennych"
+#| label: tbl-opis
+
+
+library(knitr)
+
+opis <-  data.frame(matrix(c('Id', 'Numer wiersza/obserwacji',
+                                'Pregnacies','Ilość przebytych ciąż',
+
+                                'Glucose', 'Poziom glukozy we krwi',
+
+                                'BloodPressure', 'Tętno',
+
+                                'SkinThickness', 'Grubość fałdu skórnego tricepsa (mm)',
+
+                                'Insulin', 'Poziom insuliny',
+
+                                'BMI', 'Body Mass Index, wskaźnik masy ciała (waga w kg/(wzrost w m)^2)',
+
+                                'DiabetesPedigreeFunction', 'Funkcja obliczająca prawdopodobieństwo wystąpienia cukrzycy biorąca pod uwagę wiek oraz historie chorób w rodzinie pacjenta',
+                             'Age', 'Wiek',
+                             'Outcome', 'Wynik, 1 gdy cukrzyca wystąpiła, 0 gdy cukrzyca nie wystąpiła'),ncol = 2, byrow = T))
+
+colnames(opis) <- c("Oryginalna nazwa zmiennej", "Wyjaśnienie")
+
+kable(opis)
+```
+
+# Sprawdzanie poprawności zbioru danych
+
+## Występowanie braków danych
+
+```{r}
+is.na(dane) %>%
+
+  sum()
+```
+
+Brak braków danych.
+
+## Występowanie duplikatów
+
+```{r}
+duplikaty <- unique(dane)
+length(dane$Pregnancies) == length(duplikaty$Pregnancies)
+```
+
+Brak duplikatów danych (ilość unikalnych wartości jest taka sama jak w pierwotnej tabeli).
+
+## Poprawność zmiennych
+
+```{r}
+#| tbl-cap: "Podstawowe statystyki"
+#| label: tbl-stat1
+
+kable(summary(dane[,-c(1,10)]))
+```
+
+Patrząc na statystyki możemy zauważyć już pewne nieścisłości, które z medycznego punktu widzenia nie mogą zachodzić u człowieka żyjącego.
+
+1.  $\textrm{Pregnancies} = 17$
+
+    ```{r}
+    kable(dane[dane$Pregnancies == 17,])
+    ```
+
+    Według tej obserwacji (numer 160) kobieta w wieku 47 lat przebyła 17 ciąż, co wydaje się nierealne, więc zostaje usunięta ze zbioru.
+
+    ```{r}
+    dane <- dane[-160,]
+    ```
+
+2.  $\textrm{Glucose} = 0$
+
+    ```{r}
+    id_g <- dane %>%
+      filter(Glucose == 0) %>%
+      select(Id)
+
+    dane <- dane %>%
+      filter(!Id %in% id_g$Id)
+    ```
+
+3.  $\textrm{BloodPressure} = 0$
+
+    Na podstawie: @jakubaszko_kirschnik_pielegniarstwo_1997
+
+    ```{r}
+    id_bp <- dane %>%
+      filter(BloodPressure == 0) %>%
+      select(Id)
+
+    dane <- dane %>%
+      filter(!Id %in% id_bp$Id)
+    ```
+
+4.  $\textrm{SkinThickness} = 0$
+
+    Na podstawie: @malinowski_bozilow_podstawy_1997
+
+    ```{r}
+    id_st <- dane %>%
+      filter(SkinThickness == 0) %>%
+      select(Id)
+
+    dane <- dane %>%
+      filter(!Id %in% id_st$Id)
+    ```
+
+5.  $\textrm{Insulin} = 846$ oraz $\textrm{Insulin} = 0$
+
+    Na podstawie: @gajewski_interna_2022
+
+    ```{r}
+    id_i846 <- dane %>%
+      filter(Insulin == 846) %>%
+      select(Id)
+
+    dane <- dane %>%
+      filter(!Id %in% id_i846$Id)
+
+    id_i0 <- dane %>%
+      filter(Insulin == 0) %>%
+      select(Id)
+
+    dane <- dane %>%
+      filter(!Id %in% id_i0$Id)
+    ```
+
+6.  $\textrm{BMI} = 0$
+
+    Na podstawie: \@stupnicki_wskaznik_2016
+
+    ```{r}
+    id_bmi <- dane %>%
+      filter(BMI == 0) %>%
+      select(Id)
+
+    dane <- dane %>%
+      filter(!Id %in% id_bmi$Id)
+    ```
+
+Wyżej wymienione przypadki zostają usunięte ze zbioru danych.
+
+## Występowanie obserwacji odstających
+
+```{r}
+#| fig-cap: "Boxploty danych"
+#| label: fig-box
+
+dane1 <- scale(dane[,-c(1,10)], center = F)
+
+boxplot(dane1[,c(-1,-10)], las = 2) 
+
+```
+
+Standaryzacja danych i boxploty
+
+### Wielowymiarowe elementy odstające
+
+```{r}
+#| tbl-cap: "Elementy odstające" 
+#| label: tbl-outliers
+
+tbl <- dane %>% 
+  group_by(Outcome) %>% 
+  mahalanobis_distance(-Id) %>%
+  as.data.frame() %>% 
+  filter(is.outlier == TRUE)
+
+kable(tbl)
+```
+
+Korzystając z odległości Mahalanobisa zidentyfikowane zostały nietypowe obserwacje. W tabeli @tbl-outliers przedstawione są wielowymiarowe elementy odstające, które zostają usunięte ze zbioru danych, by nie zaburzać statystyk.
+
+```{r}
+dane <- dane %>% 
+  filter(!Id %in% tbl$Id)
+```
+
+# Analiza zbioru danych
+
+## Podstawowe statystyki opisowe
+
+```{r}
+kable(summary(dane[, -1]))
+```
+
+## Korelacje
+
+```{r}
+library(ggcorrplot)
+library(rstatix)
+
+dane$Pregnancies <- as.numeric(dane$Pregnancies)
+dane$Glucose <- as.numeric(dane$Glucose)
+dane$BloodPressure <- as.numeric(dane$BloodPressure)
+dane$SkinThickness <- as.numeric(dane$SkinThickness)
+dane$Insulin <- as.numeric(dane$Insulin)
+dane$Age <- as.numeric(dane$Age)
+dane$Outcome <- as.numeric(dane$Outcome)
+ggcorrplot(cor_mat(dane), p.mat=corr_pmat(dane), lab=F)
+```
+
+```{r}
+kable(cor_mat(dane))
+```
+
+## Zależności - zainteresowac sie tymi mocno skorelowanymi
+
+### Wiek a cukrzyca
+
+```{r}
+cukrzycy <- dane[dane$Outcome == 1,]
+
+zdrowi <- dane[dane$Outcome == 0,]
+
+dane %>% 
+
+ggplot(aes(Age))+
+
+  geom_bar()
+```
+
+```{r}
+#| fig-cap: "wykres cos ekfowenf"
+#| label: fig-gshesaid
+
+library(gridExtra)
+
+wykres1 <- cukrzycy %>% 
+
+  group_by(Outcome) %>%
+
+  ggplot(aes(Age))+
+
+  ggtitle("Wiek cukrzyków")+
+
+  ylab("")+
+
+  coord_flip()+
+
+  geom_boxplot()
+
+wykres2 <- zdrowi %>% 
+
+  group_by(Outcome) %>%
+
+  ggplot(aes(Age))+
+
+  ggtitle("Wiek zdrowych")+
+
+  coord_flip()+
+
+  ylab("")+
+
+  geom_boxplot()
+
+grid.arrange(wykres2, wykres1, ncol=2)
+```
+
+## Ciąże i outcome
+
+```{r}
+#| fig-cap: "Wykres pudełkowy zmiennej Pregnancies z podziałem na Outcome"
+
+dane %>% 
+  select(Pregnancies, Outcome) %>% 
+  ggboxplot(x = "Outcome", y = "Pregnancies", combine = 1, color = "Outcome", add = "jitter")
+```
+
+## Zmienna Outcome
+
+```{r}
+kable(plyr::count(dane, 'Outcome'))
+```
+
+```{r}
+ggplot(dane,aes(x = factor(Outcome))) +
+  geom_bar(fill="lightblue")+
+  xlab("Outcome")+
+  ylab("Ilość wystąpień")
+```
+
+Dla zmiennej $\textrm{Outcome}$ wyniki zostały przedstawione w postaci histogramu, ponieważ w taki sposób widać, że prawie dwa razy więcej w tym zbiorze jest kobiet, które nie mają cukrzycy.
+
+//sprawdzic poprawnosc diabetespedigreefunction i outcome ostateczny
+
+# Budowa modelu
