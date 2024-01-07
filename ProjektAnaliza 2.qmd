@@ -20,10 +20,6 @@ bibliography: references.bib
 
 Badanie wpływu różnych czynników na zachorowania na cukrzyce. Zbiór danych pochodzi z instytutu ['National Institute of Diabetes and Digestive and Kidney Diseases'](https://www.niddk.nih.gov/ "strona instytutu"). W próbie wszystkie pacjentki to kobiety pochodzące z Indii, w wieku 21 lat lub starsze.
 
-# Opis zbioru danych
-
-## Wczytanie danych
-
 ```{r}
 library(knitr)
 library(tidyverse)
@@ -35,8 +31,17 @@ library(ggpubr)
 library(ggcorrplot)
 library(gridExtra)
 library(readr)
+library(forcats)
 library(rstatix)
+library(tidymodels)
+library(MASS)
+```
 
+# Opis zbioru danych
+
+## Wczytanie danych
+
+```{r}
 dane <- read.csv('diabetes.csv')
 dane <- dane %>% 
   add_column (Id = 1: nrow(dane), .before = 1)
@@ -106,7 +111,7 @@ Brak duplikatów danych (ilość unikalnych wartości jest taka sama jak w pierw
 kable(summary(dane[,-c(1,10)]))
 ```
 
-Patrząc na statystyki możemy zauważyć już pewne nieścisłości, które z medycznego punktu widzenia nie mogą zachodzić u człowieka żyjącego.
+Patrząc na statystyki możemy zauważyć już pewne nieścisłości, które z medycznego punktu widzenia nie mogą zachodzić u człowieka.
 
 1.  $\textrm{Pregnancies} = 17$
 
@@ -195,7 +200,7 @@ Wyżej wymienione przypadki zostają usunięte ze zbioru danych.
 ## Występowanie obserwacji odstających
 
 ```{r}
-#| fig-cap: "Boxploty danych"
+#| fig-cap: "Wykresy pudełkowe danych"
 #| label: fig-box
 
 dane1 <- scale(dane[,-c(1,10)], center = F)
@@ -204,7 +209,7 @@ boxplot(dane1[,c(-1,-10)], las = 2)
 
 ```
 
-Standaryzacja danych i boxploty
+Zmienne zostały poddane standaryzacji, dzięki czemu mogły one zostać przedstawione na jednym wykresie. Z @fig-box można wynioskować, że należy zbadać występowanie obserwacji odstających.
 
 ### Wielowymiarowe elementy odstające
 
@@ -221,7 +226,7 @@ tbl <- dane %>%
 kable(tbl)
 ```
 
-Korzystając z odległości Mahalanobisa zidentyfikowane zostały nietypowe obserwacje. W tabeli @tbl-outliers przedstawione są wielowymiarowe elementy odstające, które zostają usunięte ze zbioru danych, by nie zaburzać statystyk.
+Korzystając z odległości Mahalanobisa zidentyfikowane zostały nietypowe obserwacje. W tabeli @tbl-outliers przedstawione są wielowymiarowe elementy odstające, które zostają usunięte ze zbioru danych, by nie zaburzać statystyk oraz parametrów.
 
 ```{r}
 dane <- dane %>% 
@@ -233,8 +238,13 @@ dane <- dane %>%
 ## Podstawowe statystyki opisowe
 
 ```{r}
+#| tbl-cap: "Podstawowe statystyki"
+#| label: tbl-stat2
+
 kable(summary(dane[, -1]))
 ```
+
+W @tbl-stat2 przedstawione zostały podstawowe statystyki już po usunięciu obserwacji nieprawidłowych oraz odstających. Możemy z niej odczytać między innymi średnie wartości zmiennych ze zbioru. Widać, że zmienne po wstępnym czyszczeniu zbioru średnio przyjmują wartości zgodne z wiedzą medyczną.
 
 ## Korelacje
 
@@ -249,8 +259,10 @@ dane$SkinThickness <- as.numeric(dane$SkinThickness)
 dane$Insulin <- as.numeric(dane$Insulin)
 dane$Age <- as.numeric(dane$Age)
 dane$Outcome <- as.numeric(dane$Outcome)
-ggcorrplot(cor_mat(dane), p.mat=corr_pmat(dane), lab=F)
+ggcorrplot(cor_mat(dane[,-1]), p.mat=corr_pmat(dane), lab=F)
 ```
+
+Patrząc na wykres macierzy korelacji widać, że silnie skorelowane pary zmiennych to: $\textrm{Pregnancies}$ i $\textrm{Age}$, $\textrm{Insulin}$ i $\textrm{Glucose}$, $\textrm{SkinThickness}$ i $\textrm{BMI}$, $\textrm{Outcome}$ i $\textrm{Glucose}$, a zmienna $\textrm{DiabetesPedigreeFunction}$ nie koreluje z pozostałymi.
 
 ```{r}
 kable(cor_mat(dane))
@@ -337,3 +349,188 @@ Dla zmiennej $\textrm{Outcome}$ wyniki zostały przedstawione w postaci histogra
 //sprawdzic poprawnosc diabetespedigreefunction i outcome ostateczny
 
 # Budowa modelu
+
+## Model 1 - Regresja logistyczna
+
+```{r}
+dane$Outcome <- as.factor(dane$Outcome)
+split <- initial_split(dane,0.85) #funkcja tworząca podział
+czesc_testowa <- testing(split) #tworznie zbioru testowego
+czesc_treningowa <- training(split) #tworzenie zbioru treningowego
+nrow(czesc_testowa)
+nrow(czesc_treningowa)
+```
+
+Podział danych na część treningową oraz testową. Część treningowa to będzie 85% danych, reszta to część testowa. Zmienna Outcome zmieniamy na klase factor.
+
+```{r}
+reg_log_mod <- logistic_reg(mode = "classification",
+                             engine = "glm")
+```
+
+```{r}
+reg_rec <- recipe(Outcome~., data = czesc_treningowa) %>% #definiujemy przepis podając formułę i zbiór danych
+  step_normalize() #dodajemy krok normalizujący dane
+```
+
+```{r}
+reg_wf <- workflow() %>% 
+  add_model(reg_log_mod) %>% #dodajemy model
+  add_recipe(reg_rec) #dodajemy wcześniej przygotowany przepis
+
+#nie musimy dodwać formuły ponieważ podana została w przepisie
+```
+
+```{r}
+reg_wf_fit <- reg_wf %>% 
+  fit(data = czesc_treningowa)
+```
+
+```{r}
+predict(reg_wf_fit,czesc_treningowa)
+```
+
+## Las losowy
+
+## Model lda
+
+daleczego lda nie pca : **PCA aims to find**
+
+**the directions of maximum variance in the data, while LDA aims to find the projection that best separates the classes in the data xdddd**
+
+Why use LDA instead of PCA?
+
+LDA is more effective than PCA for classification datasets because **LDA reduces the dimensionality of the data by maximizing class separability**. It is easier to draw decision boundaries for data with maximum class separability
+
+## Porówanie
+
+podzial zbioru
+
+```{r}
+dane$Outcome <- as.factor(dane$Outcome)
+podzial <- initial_split(dane,0.85) #funkcja tworząca podział
+test <- testing(podzial) #tworznie zbioru testowego
+trening <- training(podzial) #tworzenie zbioru treningowego 
+print(c(nrow(test), nrow(trening)))
+```
+
+## reglog
+
+```{r}
+model <- logistic_reg(mode = "classification", engine = "glm")
+```
+
+normalizacja predyktorow
+
+```{r}
+reg_rec <- recipe(Outcome~., data = trening) %>% #definiujemy przepis podając formułę i zbiór danych
+step_normalize() #dodajemy krok normalizujący dane
+```
+
+przepklyw pracy dla regresji
+
+```{r}
+reg_wf <- workflow() %>%
+  add_model(model) %>% #dodajemy model
+  add_recipe(reg_rec) #dodajemy wcześniej przygotowany przepis
+```
+
+uczymy model
+
+```{r}
+reg_wf_fit <- reg_wf %>%
+  fit(data = trening)
+reg_wf_fit
+```
+
+predykcja i testowanie modelu
+
+```{r}
+reg_pred <- predict(reg_wf_fit,test) #ramka danych z predykcją 
+head(reg_pred)
+```
+
+laczymy predykcje modelu z rzeczysita wartoscia
+
+```{r}
+reg_df <- bind_cols(reg_pred, 'target' = test$Outcome)
+head(reg_df)
+```
+
+macierz pomylek
+
+```{r}
+conf_reg <- conf_mat(reg_df, truth = "target", estimate = ".pred_class")
+autoplot(conf_reg, type = "heatmap")
+```
+
+LDA
+
+```{r}
+mod.lda <- lda(Outcome~., data = dane)
+mod.lda
+```
+
+```{r}
+pred_tr <- predict(mod.lda, newdata = dane)
+plot(mod.lda)
+```
+
+```{r}
+tab_tr <- bind_cols(obs_class = dane$Outcome, pred_class = pred_tr$class) |>     table()
+acc_tr <- sum(diag(tab_tr))/sum(tab_tr)
+acc_tr
+```
+
+```{r}
+pred <- predict(mod.lda, dane)
+tab <- table(obs = dane$Outcome, pred = pred$class)
+conf<- conf_mat(tab, truth = "target", estimate = ".pred_class")
+autoplot(conf, type = "heatmap")
+```
+
+drzewo decyzyjne
+
+```{r}
+drzewo <- decision_tree(mode = "classification", engine = "rpart", cost_complexity = tune(), tree_depth = tune(), min_n = tune())
+rec <- recipe(Outcome~., data = trening) |>
+  step_normalize(all_predictors()) |>
+  step_YeoJohnson(all_predictors()) |>
+  step_pca(all_predictors(),num_comp = 2)
+rec
+met <- metric_set(accuracy, kap)
+resamp <- vfold_cv(data = trening, v = 10, repeats = 5)
+params <- extract_parameter_set_dials(drzewo)
+grid <- grid_regular(params, levels = 5)
+wf <- workflow() |> 
+  add_model(drzewo) |>
+  add_recipe(rec)
+wf
+```
+
+```{r}
+tune_res <- wf %>%
+  tune_grid(resamples = resamp, grid = grid, metrics = met)
+```
+
+```{r}
+tune_res |> 
+  autoplot()
+```
+
+```{r}
+best_params <- select_best(tune_res, metric = "accuracy")
+wf_final <- wf |> 
+  finalize_workflow(best_params)
+final_fit <- wf_final |>
+  last_fit(podzial)
+```
+
+```{r}
+tree <- extract_fit_parsnip(final_fit)
+```
+
+```{r}
+library(rpart.plot)
+rpart.plot(tree$fit)
+```
