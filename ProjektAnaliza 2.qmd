@@ -29,12 +29,16 @@ library(dplyr)
 library(DT)
 library(ggpubr)
 library(ggcorrplot)
+library(vip)
 library(gridExtra)
 library(readr)
 library(forcats)
 library(rstatix)
 library(tidymodels)
 library(MASS)
+library(Metrics)
+library(plotly)
+library(rpart.plot)
 ```
 
 # Opis zbioru danych
@@ -42,15 +46,18 @@ library(MASS)
 ## Wczytanie danych
 
 ```{r}
+#| tbl-cap: "Zbiór danych Diabetes"
+#| label: tbl-data
+
 dane <- read.csv('diabetes.csv')
 dane <- dane %>% 
   add_column (Id = 1: nrow(dane), .before = 1)
-datatable(dane)
+datatable(dane[,-1])
 ```
 
 ## Opis zmiennych
 
-Zmienne podane są w zbiorze $\textrm{diabetes}$ w języku angielskim, poniżej znajduje się tabela opisująca każdą zmienną.
+Zmienne podane są w zbiorze `diabetes` w języku angielskim, poniżej znajduje się tabela opisująca każdą zmienną.
 
 ```{r}
 #| tbl-cap: "Opis zmiennych"
@@ -62,9 +69,9 @@ library(knitr)
 opis <-  data.frame(matrix(c('Id', 'Numer wiersza/obserwacji',
                                 'Pregnacies','Ilość przebytych ciąż',
 
-                                'Glucose', 'Poziom glukozy we krwi',
+                                'Glucose', 'Plazmowe stężenie glukozy po upływie 2 godzin w teście tolerancji glukozy doustnej',
 
-                                'BloodPressure', 'Tętno',
+                                'BloodPressure', 'Rozkurczowe ciśnienie krwi',
 
                                 'SkinThickness', 'Grubość fałdu skórnego tricepsa (mm)',
 
@@ -73,7 +80,7 @@ opis <-  data.frame(matrix(c('Id', 'Numer wiersza/obserwacji',
                                 'BMI', 'Body Mass Index, wskaźnik masy ciała (waga w kg/(wzrost w m)^2)',
 
                                 'DiabetesPedigreeFunction', 'Funkcja obliczająca prawdopodobieństwo wystąpienia cukrzycy biorąca pod uwagę wiek oraz historie chorób w rodzinie pacjenta',
-                             'Age', 'Wiek',
+                             'Age', 'Wiek (w latach)',
                              'Outcome', 'Wynik, 1 gdy cukrzyca wystąpiła, 0 gdy cukrzyca nie wystąpiła'),ncol = 2, byrow = T))
 
 colnames(opis) <- c("Oryginalna nazwa zmiennej", "Wyjaśnienie")
@@ -95,7 +102,7 @@ Brak braków danych.
 
 ## Występowanie duplikatów
 
-```{r}
+```{r include=FALSE}
 duplikaty <- unique(dane)
 length(dane$Pregnancies) == length(duplikaty$Pregnancies)
 ```
@@ -113,83 +120,79 @@ kable(summary(dane[,-c(1,10)]))
 
 Patrząc na statystyki możemy zauważyć już pewne nieścisłości, które z medycznego punktu widzenia nie mogą zachodzić u człowieka.
 
-1.  $\textrm{Pregnancies} = 17$
+1.  `Pregnancies` = 17
 
     ```{r}
     kable(dane[dane$Pregnancies == 17,])
     ```
 
-    Według tej obserwacji (numer 160) kobieta w wieku 47 lat przebyła 17 ciąż, co wydaje się nierealne, więc zostaje usunięta ze zbioru.
+    Według tej obserwacji (numer 160) kobieta w wieku 47 lat przebyła 17 ciąż, więc zostaje ona usunięta ze zbioru.
 
     ```{r}
     dane <- dane[-160,]
     ```
 
-2.  $\textrm{Glucose} = 0$
+2.  `Glucose` = 0
 
     ```{r}
     id_g <- dane %>%
-      filter(Glucose == 0) %>%
-      select(Id)
+      filter(Glucose == 0)
 
     dane <- dane %>%
       filter(!Id %in% id_g$Id)
     ```
 
-3.  $\textrm{BloodPressure} = 0$
+    Na podstawie: @jeznach-steinhagen_zywienie_2020
+
+3.  `BloodPressure` = 0
 
     Na podstawie: @jakubaszko_kirschnik_pielegniarstwo_1997
 
     ```{r}
     id_bp <- dane %>%
-      filter(BloodPressure == 0) %>%
-      select(Id)
+      filter(BloodPressure == 0)
 
     dane <- dane %>%
       filter(!Id %in% id_bp$Id)
     ```
 
-4.  $\textrm{SkinThickness} = 0$
+4.  `SkinThickness` = 0
 
     Na podstawie: @malinowski_bozilow_podstawy_1997
 
     ```{r}
     id_st <- dane %>%
-      filter(SkinThickness == 0) %>%
-      select(Id)
+      filter(SkinThickness == 0)
 
     dane <- dane %>%
       filter(!Id %in% id_st$Id)
     ```
 
-5.  $\textrm{Insulin} = 846$ oraz $\textrm{Insulin} = 0$
+5.  `Insulin` = 846 oraz `Insulin` = 0
 
     Na podstawie: @gajewski_interna_2022
 
     ```{r}
     id_i846 <- dane %>%
-      filter(Insulin == 846) %>%
-      select(Id)
+      filter(Insulin == 846)
 
     dane <- dane %>%
       filter(!Id %in% id_i846$Id)
 
     id_i0 <- dane %>%
-      filter(Insulin == 0) %>%
-      select(Id)
+      filter(Insulin == 0)
 
     dane <- dane %>%
       filter(!Id %in% id_i0$Id)
     ```
 
-6.  $\textrm{BMI} = 0$
+6.  `BMI` = 0
 
-    Na podstawie: \@stupnicki_wskaznik_2016
+    Na podstawie: @stupnicki_wskaznik_2016
 
     ```{r}
     id_bmi <- dane %>%
-      filter(BMI == 0) %>%
-      select(Id)
+      filter(BMI == 0)
 
     dane <- dane %>%
       filter(!Id %in% id_bmi$Id)
@@ -205,7 +208,7 @@ Wyżej wymienione przypadki zostają usunięte ze zbioru danych.
 
 dane1 <- scale(dane[,-c(1,10)], center = F)
 
-boxplot(dane1[,c(-1,-10)], las = 2) 
+boxplot(dane1[,c(-1,-10)], las = 2)
 
 ```
 
@@ -241,14 +244,27 @@ dane <- dane %>%
 #| tbl-cap: "Podstawowe statystyki"
 #| label: tbl-stat2
 
-kable(summary(dane[, -1]))
+kable(summary(dane[, 2:9]))
 ```
 
 W @tbl-stat2 przedstawione zostały podstawowe statystyki już po usunięciu obserwacji nieprawidłowych oraz odstających. Możemy z niej odczytać między innymi średnie wartości zmiennych ze zbioru. Widać, że zmienne po wstępnym czyszczeniu zbioru średnio przyjmują wartości zgodne z wiedzą medyczną.
 
+Z tabeli można również odczytać, że:
+
+-   Większość pacjentek miała 0, 1 lub 2 ciąże, mediana wynosi 2, a najwięcej przebytych ciąż dla jednej pacjentki to aż 15
+
+-   Mediana zmiennej `Glucose` jest zbliżona do średniej, więc można przypuszczać, że ma rozkład zbliżony do symetrycznego
+
+-   To samo można powiedzieć o wszystkich pozostałych zmiennych
+
+-   Większość pacjentek jest w wieku do 30 lat
+
 ## Korelacje
 
 ```{r}
+#| fig-cap: "Wizualizacja macierzy korelacji"
+#| label: fig-cormat
+
 library(ggcorrplot)
 library(rstatix)
 
@@ -259,175 +275,189 @@ dane$SkinThickness <- as.numeric(dane$SkinThickness)
 dane$Insulin <- as.numeric(dane$Insulin)
 dane$Age <- as.numeric(dane$Age)
 dane$Outcome <- as.numeric(dane$Outcome)
-ggcorrplot(cor_mat(dane[,-1]), p.mat=corr_pmat(dane), lab=F)
+ggcorrplot(cor_mat(subset(dane, select = -c(Id, Outcome))), p.mat=corr_pmat(subset(dane, select = -c(Id, Outcome))), lab=F, colors = c("lightblue", "skyblue", "darkblue"))
 ```
 
-Patrząc na wykres macierzy korelacji widać, że silnie skorelowane pary zmiennych to: $\textrm{Pregnancies}$ i $\textrm{Age}$, $\textrm{Insulin}$ i $\textrm{Glucose}$, $\textrm{SkinThickness}$ i $\textrm{BMI}$, $\textrm{Outcome}$ i $\textrm{Glucose}$, a zmienna $\textrm{DiabetesPedigreeFunction}$ nie koreluje z pozostałymi.
+Patrząc na wykres macierzy korelacji widać, że silnie skorelowane pary zmiennych to: `Pregnancies` i `Age`, `Insulin` i `Glucose`, `SkinThickness` i `BMI`, a zmienna `DiabetesPedigreeFunction` nie koreluje z pozostałymi.
 
 ```{r}
-kable(cor_mat(dane))
+#| tbl-cap: "Macierz korelacji"
+#| label: tbl-cormat
+
+kable(cor_mat(subset(dane, select = -c(Id, Outcome))))
 ```
 
-## Zależności - zainteresowac sie tymi mocno skorelowanymi
+@tbl-cormat potwierdza powyższe związki. Wraz ze wzrostem zmiennej `Age` (wiek) rośnie również `Pregnancies` (ilość przebytych ciąż), tak samo w przypadku, gdzie wartość korelacji jest bliska jeden oraz dodatnia. Pozostałe zmienne nie są silnie skorelowane - nie ma między nimi zależności liniowej.
 
-### Wiek a cukrzyca
+## Analiza związków między zmiennymi
+
+### Histogramy zmiennych
+
+```{r}
+#| fig-cap: "Histogramy zmiennych"
+#| label: fig-hist_all
+
+par(mfrow=c(3, 3), mar=c(4, 4, 2, 1), oma=c(0, 0, 2, 0))
+
+for (i in 1:length(subset(dane, select = -c(Id, Outcome)))) {
+  hist(subset(dane, select = -c(Id, Outcome))[, i], main=names(subset(dane, select = -c(Id, Outcome)))[i], col="skyblue", xlab="", ylab="", border="black")
+}
+```
+
+Na podstawie histogramów można podejrzewać, że większa część obserwacji ma małą liczbę ciąż, niski poziom insuliny oraz DiabetesPedigreeFunction i jest młodsza. Grubość skóry i BMI wydają się rozkładać w miarę równomiernie wokół średniej.
+
+### Zmienna `Outcome`
+
+```{r}
+#| fig-cap: "Wykres kołowy zmiennej Outcome"
+#| label: fig-piechart
+
+out <- plyr::count(dane, 'Outcome')
+
+ggplot(out, aes(x = "", y = freq, fill = factor(Outcome))) +
+  geom_bar(width = 1, stat = "identity") +
+  geom_text(aes(label = paste0(round(freq/sum(freq) * 100, 1), "%")),
+            position = position_stack(vjust = 0.5),
+            color = "white") +
+  coord_polar(theta = "y") +
+  theme_void() +
+  scale_fill_manual(values = c("0" = "skyblue", "1" = "darkblue")) +
+  labs(fill = "Outcome")
+```
+
+```{r}
+#| tbl-cap: "Ilość obserwacji w podziale na Outcome"
+#| label: tbl-freq
+
+freq <- data.frame(plyr::count(dane, 'Outcome'))
+colnames(freq) <- c("Outcome", "Ilość wystąpień")
+kable(freq)
+```
+
+Dla zmiennej `Outcome` wyniki zostały przedstawione w postaci wykresu kołowego @fig-piechart. W taki sposób widać, że ponad dwa razy więcej w tym zbiorze jest kobiet, które nie mają cukrzycy - jest ich aż 258.
+
+### Wiek w podziale na `Outcome`
 
 ```{r}
 cukrzycy <- dane[dane$Outcome == 1,]
 
 zdrowi <- dane[dane$Outcome == 0,]
-
-dane %>% 
-
-ggplot(aes(Age))+
-
-  geom_bar()
 ```
 
 ```{r}
-#| fig-cap: "wykres cos ekfowenf"
-#| label: fig-gshesaid
+#| fig-cap: "Rozkład wieku w podziale na zmienną Outcome"
+#| label: fig-box_age_outcome
 
-library(gridExtra)
-
-wykres1 <- cukrzycy %>% 
-
-  group_by(Outcome) %>%
-
-  ggplot(aes(Age))+
-
-  ggtitle("Wiek cukrzyków")+
-
-  ylab("")+
-
-  coord_flip()+
-
-  geom_boxplot()
-
-wykres2 <- zdrowi %>% 
-
-  group_by(Outcome) %>%
-
-  ggplot(aes(Age))+
-
-  ggtitle("Wiek zdrowych")+
-
-  coord_flip()+
-
-  ylab("")+
-
-  geom_boxplot()
-
-grid.arrange(wykres2, wykres1, ncol=2)
+dane %>%  
+  ggboxplot(x = "Outcome", y = "Age", combine = 1, color = "Outcome", add = "jitter")+
+  scale_color_manual(values = c("darkblue", "skyblue"), labels = c("0", "1"))+
+  scale_x_discrete(labels = c("0", "1")) +
+  theme_minimal()
 ```
 
-## Ciąże i outcome
+Z wykresu pudełkowego można odczytać, że cukrzyca występuje u osób zazwyczaj po 30 roku życia. Zaś u osób młodszych (między 20 a 30 rokiem życia) rzadziej diagnozowano cukrzycę.
+
+```{r}
+#| tbl-cap: "Średni wiek w podziale na Outcome"
+#| label: tbl-age_outcome
+
+age_outcome <- data.frame(mean(cukrzycy$Age), mean(zdrowi$Age))
+colnames(age_outcome) <- c("Średni wiek cukrzyka", "Średni wiek osoby zdrowej")
+kable(age_outcome)
+```
+
+Obliczenia potwierdzają poprzednie przypuszczenia.
+
+### Ciąże w podziale na `Outcome`
 
 ```{r}
 #| fig-cap: "Wykres pudełkowy zmiennej Pregnancies z podziałem na Outcome"
+#| label: fig-preg_outcome
+
+dane %>%  
+  ggboxplot(x = "Outcome", y = "Pregnancies", combine = 1, color = "Outcome", add = "jitter")+
+  scale_color_manual(values = c("darkblue", "skyblue"), labels = c("0", "1"))+
+  scale_x_discrete(labels = c("0", "1")) +
+  theme_minimal()
+```
+
+Różnica w ilości ciąż w podziale na grupy jest nie aż tak duża jak przy `Age`.
+
+```{r}
+#| tbl-cap: "Średnia ilość ciąż w podziale na Outcome"
+#| label: tbl-preg_outcome
+
+preg_outcome <- data.frame(mean(cukrzycy$Pregnancies), mean(zdrowi$Pregnancies))
+colnames(preg_outcome) <- c("Średnia ilość ciąż cukrzyka", "Średnia ilość ciąż osoby zdrowej")
+kable(preg_outcome)
+```
+
+Ponownie, to, co można było podejrzewać na podstawie wykresu, obliczenia potwierdziły.
+
+### `Age` i `Pregnancies`
+
+```{r}
+#| fig-cap: "Wykres punktowy zależności wieku od ilości ciąż"
+#| label: fig-preg_age
 
 dane %>% 
-  select(Pregnancies, Outcome) %>% 
-  ggboxplot(x = "Outcome", y = "Pregnancies", combine = 1, color = "Outcome", add = "jitter")
+  ggplot(aes(x = Pregnancies, y = Age))+
+  geom_point(color = "darkblue")+
+  theme_minimal()
 ```
 
-## Zmienna Outcome
+Korelacja między `Age` i `Pregnancies` wynosi 0.72, co jest największą wartością korelacji między zmiennymi w tym zbiorze danych. Wykres punktowy nie sugeruje wprost zależności liniowej pomiędzy tymi zmiennymi.
+
+Jako rozszerzenie badania korelacji między dwiema zmiennymi stosuje się również model regresji liniowej.
 
 ```{r}
-kable(plyr::count(dane, 'Outcome'))
+age_preg <- lm(Age ~ Pregnancies, dane)
+summary(age_preg)
 ```
+
+Zmienna `Pregnancies` jest istotna statystycznie przy wyjaśnianiu zmienności zmiennej `Age`. Jednak $R^2$ wynosi jedynie 51%, czyli za pomocą tego modelu można wyjaśnić jedynie 51% zmienności zmiennej `Age`.
+
+Warto przetestować hipotezę: $H_0$: zależność między `Age` a `Pregnancies` jest liniowa.
 
 ```{r}
-ggplot(dane,aes(x = factor(Outcome))) +
-  geom_bar(fill="lightblue")+
-  xlab("Outcome")+
-  ylab("Ilość wystąpień")
+library(lmtest)
+raintest(age_preg)
+resettest(age_preg)
+harvtest(age_preg)
 ```
 
-Dla zmiennej $\textrm{Outcome}$ wyniki zostały przedstawione w postaci histogramu, ponieważ w taki sposób widać, że prawie dwa razy więcej w tym zbiorze jest kobiet, które nie mają cukrzycy.
-
-//sprawdzic poprawnosc diabetespedigreefunction i outcome ostateczny
+Test *Rainbow* oraz test *Harvey'a-Colliera* na liniową zależność zmiennych nie dały podstaw do odrzucenia hipotezy zerowej $H_0$ o występowaniu liniowości, jednak test *Reset* ją odrzucił. Być może dlatego, że testuje on rozszerzanie modelu o potęgi zmiennych objaśniających, czyli model rozbudowany mógłby być o wiele lepszy niż liniowy i oryginalny model jest niewystarczający.
 
 # Budowa modelu
 
 ## Model 1 - Regresja logistyczna
 
+Podział danych na część treningową oraz testową. Część treningowa to będzie 85% danych, reszta to część testowa.
+
 ```{r}
 dane$Outcome <- as.factor(dane$Outcome)
 split <- initial_split(dane,0.85) #funkcja tworząca podział
-czesc_testowa <- testing(split) #tworznie zbioru testowego
-czesc_treningowa <- training(split) #tworzenie zbioru treningowego
-nrow(czesc_testowa)
-nrow(czesc_treningowa)
+test <- testing(split) #tworznie zbioru testowego
+trening <- training(split) #tworzenie zbioru treningowego
+xd <- nrow(test)
+xdd <- nrow(trening)
+xddd <- matrix(c(xd, xdd), ncol = 2, byrow = T)
+xddd <- data.frame(xddd)
+colnames(xddd) <- c("Część testowa", "Część treningowa") 
+kable(xddd) 
 ```
 
-Podział danych na część treningową oraz testową. Część treningowa to będzie 85% danych, reszta to część testowa. Zmienna Outcome zmieniamy na klase factor.
+Zdefiniowanie przepisu podając formułę i zbiór danych, następnie dodanie kroku normalizującego dane.
 
 ```{r}
-reg_log_mod <- logistic_reg(mode = "classification",
-                             engine = "glm")
+model <- logistic_reg(mode = "classification",
+                      engine = "glm")
+
+reg_rec <- recipe(Outcome~., data = trening) %>% 
+step_normalize()
 ```
 
-```{r}
-reg_rec <- recipe(Outcome~., data = czesc_treningowa) %>% #definiujemy przepis podając formułę i zbiór danych
-  step_normalize() #dodajemy krok normalizujący dane
-```
-
-```{r}
-reg_wf <- workflow() %>% 
-  add_model(reg_log_mod) %>% #dodajemy model
-  add_recipe(reg_rec) #dodajemy wcześniej przygotowany przepis
-
-#nie musimy dodwać formuły ponieważ podana została w przepisie
-```
-
-```{r}
-reg_wf_fit <- reg_wf %>% 
-  fit(data = czesc_treningowa)
-```
-
-```{r}
-predict(reg_wf_fit,czesc_treningowa)
-```
-
-## Las losowy
-
-## Model lda
-
-daleczego lda nie pca : **PCA aims to find**
-
-**the directions of maximum variance in the data, while LDA aims to find the projection that best separates the classes in the data xdddd**
-
-Why use LDA instead of PCA?
-
-LDA is more effective than PCA for classification datasets because **LDA reduces the dimensionality of the data by maximizing class separability**. It is easier to draw decision boundaries for data with maximum class separability
-
-## Porówanie
-
-podzial zbioru
-
-```{r}
-dane$Outcome <- as.factor(dane$Outcome)
-podzial <- initial_split(dane,0.85) #funkcja tworząca podział
-test <- testing(podzial) #tworznie zbioru testowego
-trening <- training(podzial) #tworzenie zbioru treningowego 
-print(c(nrow(test), nrow(trening)))
-```
-
-## reglog
-
-```{r}
-model <- logistic_reg(mode = "classification", engine = "glm")
-```
-
-normalizacja predyktorow
-
-```{r}
-reg_rec <- recipe(Outcome~., data = trening) %>% #definiujemy przepis podając formułę i zbiór danych
-step_normalize() #dodajemy krok normalizujący dane
-```
-
-przepklyw pracy dla regresji
+Tworzenie przepływu danych, gdzie będzie dodany model oraz wcześniej przygotowany przepis.
 
 ```{r}
 reg_wf <- workflow() %>%
@@ -435,7 +465,7 @@ reg_wf <- workflow() %>%
   add_recipe(reg_rec) #dodajemy wcześniej przygotowany przepis
 ```
 
-uczymy model
+Uczenie modelu.
 
 ```{r}
 reg_wf_fit <- reg_wf %>%
@@ -443,37 +473,36 @@ reg_wf_fit <- reg_wf %>%
 reg_wf_fit
 ```
 
-predykcja i testowanie modelu
+Tworzenie ramki danych z predykcją, oraz zestawienie obok wartosci rzeczywistych.
 
 ```{r}
 reg_pred <- predict(reg_wf_fit,test) #ramka danych z predykcją 
-head(reg_pred)
+reg_df1 <- bind_cols(reg_pred, 'target' = test$Outcome)
+colnames(reg_df1) <- c("Predykcja modelu", "Wartość rzeczywista")
+kable(head(reg_df1))
 ```
 
-laczymy predykcje modelu z rzeczysita wartoscia
+Wizualzacja
 
 ```{r}
-reg_df <- bind_cols(reg_pred, 'target' = test$Outcome)
-head(reg_df)
-```
+#| fig-cap: "Wizualizacją skuteczności przeprowadzonej klasyfikacji"
+#| label: logreg
 
-macierz pomylek
 
-```{r}
-conf_reg <- conf_mat(reg_df, truth = "target", estimate = ".pred_class")
+conf_reg <- conf_mat(reg_df1, truth = "Wartość rzeczywista", estimate = "Predykcja modelu")
 autoplot(conf_reg, type = "heatmap")
 ```
 
 LDA
 
 ```{r}
-mod.lda <- lda(Outcome~., data = dane)
-mod.lda
+lda <- lda(Outcome~., data = dane)
+lda
 ```
 
 ```{r}
-pred_tr <- predict(mod.lda, newdata = dane)
-plot(mod.lda)
+pred_tr <- predict(lda, newdata = dane)
+plot(lda, color = "skyblue")
 ```
 
 ```{r}
@@ -483,54 +512,51 @@ acc_tr
 ```
 
 ```{r}
-pred <- predict(mod.lda, dane)
+pred <- predict(lda, dane)
 tab <- table(obs = dane$Outcome, pred = pred$class)
 conf<- conf_mat(tab, truth = "target", estimate = ".pred_class")
 autoplot(conf, type = "heatmap")
 ```
 
-drzewo decyzyjne
+daleczego lda nie pca : **PCA aims to find**
+
+**the directions of maximum variance in the data, while LDA aims to find the projection that best separates the classes in the data xdddd**
+
+Why use LDA instead of PCA?
+
+LDA is more effective than PCA for classification datasets because **LDA reduces the dimensionality of the data by maximizing class separability**. It is easier to draw decision boundaries for data with maximum class separability
+
+## drzewo
 
 ```{r}
-drzewo <- decision_tree(mode = "classification", engine = "rpart", cost_complexity = tune(), tree_depth = tune(), min_n = tune())
-rec <- recipe(Outcome~., data = trening) |>
-  step_normalize(all_predictors()) |>
-  step_YeoJohnson(all_predictors()) |>
-  step_pca(all_predictors(),num_comp = 2)
-rec
-met <- metric_set(accuracy, kap)
-resamp <- vfold_cv(data = trening, v = 10, repeats = 5)
-params <- extract_parameter_set_dials(drzewo)
-grid <- grid_regular(params, levels = 5)
-wf <- workflow() |> 
-  add_model(drzewo) |>
-  add_recipe(rec)
-wf
+tree <- decision_tree() %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+tree_fit <- tree %>%
+  fit(Outcome ~ . , data = trening)
 ```
 
 ```{r}
-tune_res <- wf %>%
-  tune_grid(resamples = resamp, grid = grid, metrics = met)
+#| fig-cap: "Ważność zmiennych"
+#| label: fig-importance
+
+
+var_importance <- vip(tree_fit, num_features = 8)
+print(var_importance)
 ```
 
-```{r}
-tune_res |> 
-  autoplot()
-```
+Zmienna 'Glucose' ma największy wpływ na model, na drugim i trzecim miejscu mamy 'Age' oraz 'Insulin'.
 
 ```{r}
-best_params <- select_best(tune_res, metric = "accuracy")
-wf_final <- wf |> 
-  finalize_workflow(best_params)
-final_fit <- wf_final |>
-  last_fit(podzial)
+rpart.plot(tree_fit$fit, type = 5, extra = 101, under = T , cex = 0.45, box.palette = "skyblue")
 ```
 
-```{r}
-tree <- extract_fit_parsnip(final_fit)
-```
+Na podstawie wykresu @fig-importance zmienna `Glucose` była najważniejsza dla zbioru dlatego jest głownym wierzchołkiem.
 
 ```{r}
-library(rpart.plot)
-rpart.plot(tree$fit)
+tree_pred <- predict(tree_fit, test, type = "class")
+tab_tree <- table(obs = test$Outcome, pred = t(tree_pred))
+conf<- conf_mat(tab, truth = "target", estimate = ".pred_class")
+autoplot(conf, type = "heatmap")
 ```
