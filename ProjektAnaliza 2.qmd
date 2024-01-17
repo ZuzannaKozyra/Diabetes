@@ -12,7 +12,7 @@ format:
     toc-title: Spis treści
 editor: visual
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: outline
 bibliography: references.bib
 ---
 
@@ -20,7 +20,7 @@ bibliography: references.bib
 
 Badanie wpływu różnych czynników na zachorowania na cukrzyce. Zbiór danych pochodzi z instytutu ['National Institute of Diabetes and Digestive and Kidney Diseases'](https://www.niddk.nih.gov/ "strona instytutu"). W próbie wszystkie pacjentki to kobiety pochodzące z Indii, w wieku 21 lat lub starsze.
 
-```{r}
+```{r warning=FALSE, message=FALSE}
 library(knitr)
 library(tidyverse)
 library(Hotelling)
@@ -31,6 +31,7 @@ library(ggpubr)
 library(ggcorrplot)
 library(vip)
 library(gridExtra)
+library(caret)
 library(readr)
 library(forcats)
 library(rstatix)
@@ -39,6 +40,8 @@ library(MASS)
 library(Metrics)
 library(plotly)
 library(rpart.plot)
+library(randomForest)
+library(caret)
 ```
 
 # Opis zbioru danych
@@ -46,8 +49,6 @@ library(rpart.plot)
 ## Wczytanie danych
 
 ```{r}
-#| tbl-cap: "Zbiór danych Diabetes"
-#| label: tbl-data
 
 dane <- read.csv('diabetes.csv')
 dane <- dane %>% 
@@ -94,8 +95,9 @@ kable(opis)
 
 ```{r}
 is.na(dane) %>%
-
-  sum()
+  sum() %>%
+  data.frame("Brakujące_wartości" = .) %>%
+  kable()
 ```
 
 Brak braków danych.
@@ -410,33 +412,42 @@ Korelacja między `Age` i `Pregnancies` wynosi 0.72, co jest największą warto�
 
 Jako rozszerzenie badania korelacji między dwiema zmiennymi stosuje się również model regresji liniowej.
 
-```{r}
+```{r include=FALSE}
 age_preg <- lm(Age ~ Pregnancies, dane)
 summary(age_preg)
 ```
 
-Zmienna `Pregnancies` jest istotna statystycznie przy wyjaśnianiu zmienności zmiennej `Age`. Jednak $R^2$ wynosi jedynie 51%, czyli za pomocą tego modelu można wyjaśnić jedynie 51% zmienności zmiennej `Age`.
+Zmienna `Pregnancies` jest istotna statystycznie przy wyjaśnianiu zmienności zmiennej `Age`. Jednak $R^2$ wynosi jedynie $51\%$, czyli za pomocą tego modelu można wyjaśnić jedynie $51\%$ zmienności zmiennej `Age`.
 
 Warto przetestować hipotezę: $H_0$: zależność między `Age` a `Pregnancies` jest liniowa.
 
 ```{r}
+#| tbl-cap: "Wartości p dla testów na liniowość"
+
 library(lmtest)
-raintest(age_preg)
-resettest(age_preg)
-harvtest(age_preg)
+rain <- raintest(age_preg)
+reset <- resettest(age_preg)
+harv <- harvtest(age_preg)
+tests <- c(rain$p.value, reset$p.value, harv$p.value)
+tests <- matrix(tests, byrow = T, ncol = 3)
+colnames(tests) <- c("Test Rainbow", "Test RESET", "Teast Harvey'a-Colliera")
+kable(tests)
 ```
 
 Test *Rainbow* oraz test *Harvey'a-Colliera* na liniową zależność zmiennych nie dały podstaw do odrzucenia hipotezy zerowej $H_0$ o występowaniu liniowości, jednak test *Reset* ją odrzucił. Być może dlatego, że testuje on rozszerzanie modelu o potęgi zmiennych objaśniających, czyli model rozbudowany mógłby być o wiele lepszy niż liniowy i oryginalny model jest niewystarczający.
 
-# Budowa modelu
+# Budowa modeli
 
-## Model 1 - Regresja logistyczna
+## Regresja logistyczna
 
-Podział danych na część treningową oraz testową. Część treningowa to będzie 85% danych, reszta to część testowa.
+Najpierw następuje podział danych na część treningową oraz testową. Część treningowa będzie stanowiła $85\%$ danych, reszta będzie częścią testową.
 
 ```{r}
-dane$Outcome <- as.factor(dane$Outcome)
-split <- initial_split(dane,0.85) #funkcja tworząca podział
+#| tbl-cap: "Podział danych"
+#| label: tbl-split
+dane2 <- dane[,-1]
+dane2$Outcome <- as.factor(dane2$Outcome)
+split <- initial_split(dane2,0.85) #funkcja tworząca podział
 test <- testing(split) #tworznie zbioru testowego
 trening <- training(split) #tworzenie zbioru treningowego
 xd <- nrow(test)
@@ -447,7 +458,7 @@ colnames(xddd) <- c("Część testowa", "Część treningowa")
 kable(xddd) 
 ```
 
-Zdefiniowanie przepisu podając formułę i zbiór danych, następnie dodanie kroku normalizującego dane.
+Następnie zdefiniowana zostaje formuła oraz dodany zostaje krok normalizujący dane, by ujednolicić wpływ zmiennych na model. Dodany zostaje model oraz wcześniej przygotowana formuła do przepływu danych.
 
 ```{r}
 model <- logistic_reg(mode = "classification",
@@ -457,106 +468,293 @@ reg_rec <- recipe(Outcome~., data = trening) %>%
 step_normalize()
 ```
 
-Tworzenie przepływu danych, gdzie będzie dodany model oraz wcześniej przygotowany przepis.
-
 ```{r}
 reg_wf <- workflow() %>%
   add_model(model) %>% #dodajemy model
   add_recipe(reg_rec) #dodajemy wcześniej przygotowany przepis
 ```
 
-Uczenie modelu.
+Można przejść do uczenia modelu na części treningowej.
 
-```{r}
+```{r include=FALSE}
 reg_wf_fit <- reg_wf %>%
   fit(data = trening)
 reg_wf_fit
 ```
 
-Tworzenie ramki danych z predykcją, oraz zestawienie obok wartosci rzeczywistych.
-
 ```{r}
+#| tbl-cap: "Zestawienie predykcji i wartości rzeczywistej"
+#| label: tbl-pred_real
+
 reg_pred <- predict(reg_wf_fit,test) #ramka danych z predykcją 
 reg_df1 <- bind_cols(reg_pred, 'target' = test$Outcome)
 colnames(reg_df1) <- c("Predykcja modelu", "Wartość rzeczywista")
 kable(head(reg_df1))
 ```
 
-Wizualzacja
+@tbl-pred_real przedstawia zestawienie predykcji dokonanej przez model regresji logistycznej oraz wartości rzeczywistej ze zbioru danych.
 
 ```{r}
-#| fig-cap: "Wizualizacją skuteczności przeprowadzonej klasyfikacji"
-#| label: logreg
+#| fig-cap: "Wizualizacja skuteczności przeprowadzonej klasyfikacji"
+#| label: fig-logreg
 
 
 conf_reg <- conf_mat(reg_df1, truth = "Wartość rzeczywista", estimate = "Predykcja modelu")
 autoplot(conf_reg, type = "heatmap")
 ```
 
-LDA
+Na @fig-logreg przedstawiona została macierz pomyłek. Można z niej odczytać, ile wartości zostało przewidzianych poprawnie, a ile źle.
+
+Dokładność (accuracy) modelu:
+
+$$
+Accuracy = \frac{TP + TN}{TP + TN + FP + TN}
+$$
+
+gdzie TP oznacza True Positive, TN - True Negative, FP - False Positive, FN - False Negative.
+
+```{r include=FALSE}
+acc <- (31+15)/ (1+15+31+10)
+```
+
+Około $81\%$ przypadków zostało zakwalifikowane poprawnie.
 
 ```{r}
-lda <- lda(Outcome~., data = dane)
-lda
+plogreg <- as.numeric(reg_pred$.pred_class) 
+xdd <- as.numeric(test$Outcome)
+rmselog<- rmse(xdd, plogreg)
+tbllog <- data.frame(c(format(round(rmselog, 2), nsmall = 2),
+                       format(round(acc, 2), nsmall = 2)),
+                     row.names = c("RMSE", "Accuracy"))
+colnames(tbllog) <- c("Wartość")
+kable(tbllog)
+```
+
+## LDA
+
+Model analizy dyskryminacyjnej
+
+```{r}
+dane3 <- trening %>% 
+  mutate_if(is.numeric, scale) %>% 
+  as.data.frame()
 ```
 
 ```{r}
-pred_tr <- predict(lda, newdata = dane)
-plot(lda, color = "skyblue")
+#| tbl-cap: "Średnie zmiennych w podziale na grupy"
+#| label: tbl-means_lda
+
+lda <- lda(Outcome~., data = dane3)
+kable(data.frame(lda$means))
 ```
 
-```{r}
-tab_tr <- bind_cols(obs_class = dane$Outcome, pred_class = pred_tr$class) |>     table()
-acc_tr <- sum(diag(tab_tr))/sum(tab_tr)
-acc_tr
-```
+Prawdopodobieństwa występowania poszczególnych stanów zmiennej zależnej `Outcome`. 0 (brak cukrzycy) występowało w $68\%$ przypadków, a 1 (cukrzyca) w $32\%$.
+
+Im większa różnica w średnich grupowych, tym ta zmienna niezależna lepiej dyskryminuje, w tym przypadku najlepiej dyskryminuje zmienna `Glucose` .
+
+Na podstawie współczynników wagowych w kombinacji liniowej również można stwierdzić, który współczynnik najlepiej dyskryminuje, w tym przypadku jest to również zmienna `Glucose`.
+
+Na podstawie wzoru na liczbę zmiennych testowych dyskryminacyjnych:
+
+$$
+min(m, k - 1)
+$$
+
+gdzie $m$ - liczba zmiennych niezależnych, $k$ - liczba poziomów zmiennej zależnej. W tym zbiorze danych jest 8 zmiennych niezależnych oraz dwa poziomy zmiennej zależnej. Oznacza to, że jest jedna zmienna dyskryminacyjna na podstawie wzoru.
 
 ```{r}
-pred <- predict(lda, dane)
-tab <- table(obs = dane$Outcome, pred = pred$class)
+#| fig-cap: "LDA wykres diagnostyczny"
+#| label: fig-lda
+
+test_lda <- test %>% 
+  mutate_if(is.numeric, scale) %>% 
+  as.data.frame()
+pred_tr <- predict(lda, newdata = test_lda)
+plot(lda)
+```
+
+Z wykresu @fig-lda można wywnioskować, że 0 występowało dla mniejszych wartości a 1 dla większych, co zgadza się z przypuszczeniami, że dla mniejszych wartości `Glucose` większość pacjentów nie ma cukrzycy.
+
+```{r}
+#| fig-cap: "Wizualizacja skuteczności przeprowadzonej klasyfikacji"
+#| label: fig-lda_confmat
+
+pred <- predict(lda, newdata = test_lda)
+tab <- table(obs = test_lda$Outcome, pred = pred$class)
 conf<- conf_mat(tab, truth = "target", estimate = ".pred_class")
 autoplot(conf, type = "heatmap")
 ```
 
-daleczego lda nie pca : **PCA aims to find**
-
-**the directions of maximum variance in the data, while LDA aims to find the projection that best separates the classes in the data xdddd**
-
-Why use LDA instead of PCA?
-
-LDA is more effective than PCA for classification datasets because **LDA reduces the dimensionality of the data by maximizing class separability**. It is easier to draw decision boundaries for data with maximum class separability
-
-## drzewo
+@fig-lda_confmat przedstawia macierz pomyłek, czyli ile obserwacji zostało zaklasyfikowanych poprawnie, a ile niepoprawnie.
 
 ```{r}
-tree <- decision_tree() %>%
-  set_engine("rpart") %>%
-  set_mode("classification")
+tab_tr <- bind_cols(obs_class = test_lda$Outcome,
+                    pred_class = pred_tr$class) |>  
+table()
 
-tree_fit <- tree %>%
-  fit(Outcome ~ . , data = trening)
+acc_tr <- sum(diag(tab_tr))/sum(tab_tr)
 ```
+
+```{r}
+plda <- as.numeric(pred$x) 
+xdd <- as.numeric(test$Outcome)
+rmselda<- rmse(xdd, plda)
+tbllda <- data.frame(c(format(round(rmselda, 2), nsmall = 2),
+                       format(round(acc_tr, 2), nsmall = 2)),
+                     row.names = c("RMSE", "Accuracy"))
+colnames(tbllda) <- c("Wartość")
+```
+
+```{r}
+#| tbl-cap: "Wartości RMSE i Accuracy dla LDA"
+#| label: tbl-lda
+
+kable(tbllda)
+```
+
+## Drzewo decyzyjne
+
+Implementacja modelu drzewa.
+
+```{r}
+#| fig-cap: "Wizualizacja modelu drzewa decyzyjnego"
+#| label: fig-tree
+
+drzewo <- rpart(Outcome ~ . , data = trening)
+rpart.plot(drzewo)
+```
+
+Należy zacząć "od góry", stwierdzając czy jak w tym przypadku pacjent posiada glukozę równą 128, jeśli tak, to należy iść w lewo, jeśli jest inaczej to w prawo. Robimy tak aż do momenu dojścia do liścia tzn. najniższej warstwy drzewa. Procent w prostokątach oznacza jaki procent osób ma taki przypadek.
 
 ```{r}
 #| fig-cap: "Ważność zmiennych"
 #| label: fig-importance
 
-
-var_importance <- vip(tree_fit, num_features = 8)
+var_importance <- vip(drzewo, num_features = 8)
 print(var_importance)
 ```
 
-Zmienna 'Glucose' ma największy wpływ na model, na drugim i trzecim miejscu mamy 'Age' oraz 'Insulin'.
+Na podstawie wykresu @fig-importance można stwierdzić, że zmienna `Glucose` była najważniejsza dla zbioru, dlatego jest głównym wierzchołkiem.
 
 ```{r}
-rpart.plot(tree_fit$fit, type = 5, extra = 101, under = T , cex = 0.45, box.palette = "skyblue")
+#| tbl-cap: "Macierz pomyłek dla części treningowej"
+#| label: tbl-tree-mac-trening
+
+pp <- predict(drzewo, trening, type = 'class')
+conf_matrix_tree_train <- confusionMatrix(pp, trening$Outcome, positive = '1')
+kable(conf_matrix_tree_train$table)
 ```
 
-Na podstawie wykresu @fig-importance zmienna `Glucose` była najważniejsza dla zbioru dlatego jest głownym wierzchołkiem.
+Dokładność części treningowej wynosi $89,3\%$ .
 
 ```{r}
-tree_pred <- predict(tree_fit, test, type = "class")
-tab_tree <- table(obs = test$Outcome, pred = t(tree_pred))
-conf<- conf_mat(tab, truth = "target", estimate = ".pred_class")
-autoplot(conf, type = "heatmap")
+#| tbl-cap: "Macierz pomyłek dla części testowej"
+#| label: tbl-tree-mac-test
+
+p <- predict(drzewo, test, type = 'class')
+conf_matrix_tree_test <- confusionMatrix(p, test$Outcome, positive = '1')
+kable(conf_matrix_tree_test$table)
 ```
+
+Poprawnie zostało zaklasyfikowanych 48 z 57 obserwacji z części testowej.
+
+```{r}
+#| tbl-cap: Wartości RMSE i Accuracy dla drzewa decyzyjnego
+#| label: tbl-tree
+
+
+p1 <- as.numeric(p) 
+xdd <- as.numeric(test$Outcome)
+rmse_tree<- rmse(xdd, p1)
+tbltree <- data.frame(c(format(round(rmse_tree, 2), nsmall = 2),
+            format(round(conf_matrix_tree_test$overall[1], 2), nsmall = 2)),
+            row.names = c("RMSE", "Accuracy"))
+colnames(tbltree) <- c("Wartość")
+kable(tbltree)
+```
+
+## Las losowy
+
+Budowa modelu lasu losowego.
+
+```{r}
+rf <- randomForest(Outcome ~ . , data = trening)
+```
+
+Błąd wynosi około $22\%$, więc dokładność części treningowej wynosi około $78\%$.
+
+```{r}
+#| tbl-cap: Macierz pomyłek dla części treningowej
+#| label: tbl-rf
+
+rf_pred <- predict(rf, trening)
+conf_matrix_forest_train <- confusionMatrix(rf_pred, trening$Outcome)
+kable(conf_matrix_forest_train$table)
+```
+
+Część treningowa ma $100\%$ dokładności.
+
+```{r}
+#| tbl-cap: Macierz pomyłek dla części testowej
+#| label: tbl-rf-mac
+
+rf_pred2 <- predict(rf, test)
+conf_matrix_forest_test <- confusionMatrix(rf_pred2, test$Outcome)
+kable(conf_matrix_forest_test$table)
+```
+
+Część testowa ma około $81\%$ dokładności.
+
+Gdy dokładność modelu na części treningowej wynosi $100\%$, to można przypuszczać, że model został przeuczony i powinno się zastosować na przykład dostosowanie paramterów modelu lasu losowego. Jednak dokładność części testowa wynosi około $81\%$, więc model dobrze dostosowuje się do nowych, nieznanych danych. Można zakładać, że do przeuczenia modelu nie doszło.
+
+```{r}
+#| fig-cap: "Wykres błędów w zależności od liczby drzew w lesie losowym"
+#| label: fig-rferror
+
+plot(rf, main = "")
+```
+
+Na wykresie @fig-rferror widać, jak zmienia się błąd wraz z liczbą drzew decyzyjnych w lesie losowym. Można stwierdzić, że błąd wraz z ilością drzew się stabilizuje, lecz nie maleje.
+
+```{r}
+#| fig-cap: "Istotność zmiennych w lesie losowym"
+#| label: fig-ist-rf
+
+varImpPlot(rf, sort = T, main = "")
+```
+
+Podobnie jak w drzewie decyzyjnym, zmienna `Glucose` ma największe znaczenie.
+
+```{r}
+#| tbl-cap: "Wartości RMSE i Accuracy dla lasu losowego"
+#| label: tbl-rf-rmse-acc
+
+
+p_las <- as.numeric(rf_pred2) 
+xdd <- as.numeric(test$Outcome)
+rmselas<- rmse(xdd, p_las)
+tbllas <- data.frame(c(format(round(rmselas, 2), nsmall = 2),
+               format(round(conf_matrix_forest_test$overall[1], 2), nsmall = 2)),  row.names = c("RMSE", "Accuracy"))
+colnames(tbllas) <- c("Wartość")
+kable(tbllas)
+```
+
+# Porównanie modeli
+
+```{r}
+#| tbl-cap: "Miary RMSE i Accuracy"
+#| label: tbl-rmse_r2
+
+rmse_r2 <- cbind(tbllog, tbllda, tbltree, tbllas)
+rownames(rmse_r2) <- c("RMSE", "Accuracy")
+colnames(rmse_r2) <- c("Regresja logistyczna", "LDA", "Drzewo decyzyjne", "Las losowy")
+kable(rmse_r2)
+```
+
+RMSE, czyli błąd średniokwadratowy mierzy średnią różnicę między przewidzianymi a prawdziwymi wartościami. Najmniejszą wartość ma dla modelu regresji logistycznej, czyli w tym modelu są najmniejsze błędy predykcji.
+
+Z tabeli @tbl-rmse_r2 wynika, że model regresji logistycznej będzie najlepszy, najwyższa dokładność i najmniejszy błąd średniokwadratowy.
+
+# Źródła
+
+<https://www.kaggle.com/datasets/akshaydattatraykhare/diabetes-dataset>
